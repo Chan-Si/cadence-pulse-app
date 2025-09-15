@@ -1,32 +1,89 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { QrCode, Play, Square, LogOut, Users, Calendar, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
+import { collection, addDoc, onSnapshot, query, orderBy, limit } from 'firebase/firestore';
+import { db } from '@/lib/firebase';
+import QRCode from 'qrcode';
 
 const TeacherDashboard = () => {
   const [isClassActive, setIsClassActive] = useState(false);
+  const [qrCodeUrl, setQrCodeUrl] = useState<string>('');
+  const [sessionId, setSessionId] = useState<string>('');
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  const handleStartAttendance = () => {
-    setIsClassActive(true);
-    toast({
-      title: "Attendance Started",
-      description: "QR code generated for student attendance",
-    });
+  const handleStartAttendance = async () => {
+    try {
+      const newSessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const qrData = {
+        sessionId: newSessionId,
+        timestamp: new Date().toISOString(),
+        teacherId: user?.id,
+        teacherName: user?.name
+      };
+      
+      const qrDataString = JSON.stringify(qrData);
+      const qrUrl = await QRCode.toDataURL(qrDataString, {
+        width: 400,
+        margin: 2,
+        color: {
+          dark: '#6366F1',
+          light: '#FFFFFF'
+        }
+      });
+      
+      setQrCodeUrl(qrUrl);
+      setSessionId(newSessionId);
+      setIsClassActive(true);
+      
+      toast({
+        title: "Attendance Started",
+        description: "QR code generated for student attendance",
+      });
+    } catch (error) {
+      console.error('Error generating QR code:', error);
+      toast({
+        title: "Error",
+        description: "Failed to start attendance session",
+        variant: "destructive",
+      });
+    }
   };
 
-  const handleCancelClass = () => {
-    setIsClassActive(false);
-    toast({
-      title: "Class Cancelled",
-      description: "Attendance session ended",
-      variant: "destructive",
-    });
+  const handleCancelClass = async () => {
+    try {
+      // Create notification for class cancellation
+      await addDoc(collection(db, 'notifications'), {
+        type: 'class_cancelled',
+        message: `Class cancelled by ${user?.name}`,
+        sessionId: sessionId,
+        timestamp: new Date(),
+        teacherId: user?.id,
+        teacherName: user?.name
+      });
+
+      setIsClassActive(false);
+      setQrCodeUrl('');
+      setSessionId('');
+      
+      toast({
+        title: "Class Cancelled",
+        description: "Notification sent to students",
+        variant: "destructive",
+      });
+    } catch (error) {
+      console.error('Error cancelling class:', error);
+      toast({
+        title: "Error",
+        description: "Failed to cancel class",
+        variant: "destructive",
+      });
+    }
   };
 
   const handleLogout = () => {
@@ -119,10 +176,14 @@ const TeacherDashboard = () => {
           <CardContent className="space-y-6">
             {/* QR Code Area */}
             <div className="aspect-square max-w-64 mx-auto bg-muted rounded-lg flex items-center justify-center border-2 border-dashed border-border">
-              {isClassActive ? (
+              {isClassActive && qrCodeUrl ? (
                 <div className="text-center animate-glow">
-                  <div className="w-48 h-48 bg-white rounded-lg shadow-medium flex items-center justify-center mb-4">
-                    <QrCode className="h-32 w-32 text-primary" />
+                  <div className="w-48 h-48 bg-white rounded-lg shadow-medium flex items-center justify-center mb-4 overflow-hidden">
+                    <img 
+                      src={qrCodeUrl} 
+                      alt="Attendance QR Code" 
+                      className="w-full h-full object-contain"
+                    />
                   </div>
                   <p className="text-sm font-medium">Session Active</p>
                   <p className="text-xs text-muted-foreground">Students can scan now</p>

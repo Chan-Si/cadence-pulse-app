@@ -1,22 +1,111 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { QrCode, Scan, Bell, LogOut, BookOpen, Calendar, CheckCircle, Clock } from 'lucide-react';
+import { QrCode, Scan, Bell, LogOut, BookOpen, Calendar, CheckCircle, Clock, Camera, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
+import { collection, addDoc, onSnapshot, query, orderBy, limit } from 'firebase/firestore';
+import { db } from '@/lib/firebase';
+import QrScanner from 'qr-scanner';
 
 const StudentDashboard = () => {
+  const [isScanning, setIsScanning] = useState(false);
+  const [notifications, setNotifications] = useState<any[]>([]);
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const scannerRef = useRef<QrScanner | null>(null);
 
-  const handleScanQR = () => {
-    toast({
-      title: "QR Scanner",
-      description: "QR code scanner would open here",
+  useEffect(() => {
+    // Listen for notifications
+    const notificationsQuery = query(
+      collection(db, 'notifications'),
+      orderBy('timestamp', 'desc'),
+      limit(10)
+    );
+    
+    const unsubscribe = onSnapshot(notificationsQuery, (snapshot) => {
+      const newNotifications = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setNotifications(newNotifications);
     });
+
+    return () => unsubscribe();
+  }, []);
+
+  const handleScanQR = async () => {
+    try {
+      setIsScanning(true);
+      
+      if (!videoRef.current) return;
+      
+      // Create QR scanner instance
+      const scanner = new QrScanner(
+        videoRef.current,
+        async (result) => {
+          try {
+            // Parse QR code data
+            const qrData = JSON.parse(result.data);
+            
+            // Create attendance record
+            await addDoc(collection(db, 'attendance'), {
+              studentId: user?.id,
+              studentName: user?.name,
+              studentEmail: user?.email,
+              sessionId: qrData.sessionId,
+              teacherId: qrData.teacherId,
+              teacherName: qrData.teacherName,
+              timestamp: new Date(),
+              scannedAt: new Date()
+            });
+            
+            toast({
+              title: "Attendance Marked!",
+              description: "Successfully checked in to class",
+            });
+            
+            stopScanning();
+          } catch (error) {
+            console.error('Error processing QR code:', error);
+            toast({
+              title: "Invalid QR Code",
+              description: "This QR code is not valid for attendance",
+              variant: "destructive",
+            });
+          }
+        },
+        {
+          highlightScanRegion: true,
+          highlightCodeOutline: true,
+        }
+      );
+      
+      scannerRef.current = scanner;
+      await scanner.start();
+      
+    } catch (error) {
+      console.error('Error starting camera:', error);
+      toast({
+        title: "Camera Error",
+        description: "Unable to access camera. Please check permissions.",
+        variant: "destructive",
+      });
+      setIsScanning(false);
+    }
+  };
+
+  const stopScanning = () => {
+    if (scannerRef.current) {
+      scannerRef.current.stop();
+      scannerRef.current.destroy();
+      scannerRef.current = null;
+    }
+    setIsScanning(false);
   };
 
   const handleLogout = () => {
@@ -28,29 +117,20 @@ const StudentDashboard = () => {
     });
   };
 
-  const notifications = [
-    {
-      id: 1,
-      title: "Computer Science 101",
-      message: "Attendance is now open",
-      time: "2 min ago",
-      type: "active"
-    },
-    {
-      id: 2,
-      title: "Mathematics 201",
-      message: "Class starting in 15 minutes",
-      time: "13 min ago",
-      type: "upcoming"
-    },
-    {
-      id: 3,
-      title: "Physics Lab",
-      message: "Attendance submitted successfully",
-      time: "1 hour ago",
-      type: "completed"
-    }
-  ];
+  const formatNotificationTime = (timestamp: any) => {
+    if (!timestamp) return '';
+    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+    const minutes = Math.floor(diff / 60000);
+    
+    if (minutes < 1) return 'Just now';
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours} hour${hours > 1 ? 's' : ''} ago`;
+    const days = Math.floor(hours / 24);
+    return `${days} day${days > 1 ? 's' : ''} ago`;
+  };
 
   return (
     <div className="min-h-screen gradient-subtle">
@@ -128,24 +208,45 @@ const StudentDashboard = () => {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            {/* Scanner Icon */}
-            <div className="aspect-square max-w-48 mx-auto bg-muted rounded-lg flex items-center justify-center border-2 border-dashed border-border">
-              <div className="text-center">
-                <QrCode className="h-20 w-20 text-primary mx-auto mb-3" />
-                <p className="text-sm text-muted-foreground">Point camera at QR code</p>
-              </div>
+            {/* Scanner Area */}
+            <div className="aspect-square max-w-80 mx-auto bg-muted rounded-lg flex items-center justify-center border-2 border-dashed border-border overflow-hidden">
+              {isScanning ? (
+                <div className="relative w-full h-full">
+                  <video 
+                    ref={videoRef}
+                    className="w-full h-full object-cover rounded-lg"
+                    playsInline
+                    muted
+                  />
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    className="absolute top-2 right-2"
+                    onClick={stopScanning}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              ) : (
+                <div className="text-center">
+                  <Camera className="h-20 w-20 text-primary mx-auto mb-3" />
+                  <p className="text-sm text-muted-foreground">Point camera at QR code</p>
+                </div>
+              )}
             </div>
 
             {/* Scan Button */}
-            <Button
-              variant="hero"
-              size="xl"
-              className="w-full"
-              onClick={handleScanQR}
-            >
-              <Scan className="h-5 w-5" />
-              Scan QR for Attendance
-            </Button>
+            {!isScanning && (
+              <Button
+                variant="hero"
+                size="xl"
+                className="w-full"
+                onClick={handleScanQR}
+              >
+                <Scan className="h-5 w-5" />
+                Scan QR for Attendance
+              </Button>
+            )}
           </CardContent>
         </Card>
 
@@ -160,45 +261,44 @@ const StudentDashboard = () => {
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
-              {notifications.map((notification) => (
-                <div 
-                  key={notification.id} 
-                  className="flex items-start space-x-3 p-3 rounded-lg bg-muted/50 hover:bg-muted/70 transition-colors"
-                >
-                  <div className="flex-shrink-0 mt-1">
-                    {notification.type === 'active' && (
-                      <div className="w-2 h-2 bg-accent rounded-full animate-glow"></div>
-                    )}
-                    {notification.type === 'upcoming' && (
-                      <div className="w-2 h-2 bg-primary rounded-full"></div>
-                    )}
-                    {notification.type === 'completed' && (
-                      <div className="w-2 h-2 bg-muted-foreground rounded-full"></div>
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between mb-1">
-                      <p className="text-sm font-medium truncate">
-                        {notification.title}
-                      </p>
-                      <Badge 
-                        variant={notification.type === 'active' ? 'default' : 'secondary'}
-                        className="text-xs"
-                      >
-                        {notification.type === 'active' && 'Live'}
-                        {notification.type === 'upcoming' && 'Soon'}
-                        {notification.type === 'completed' && 'Done'}
-                      </Badge>
+              {notifications.length > 0 ? (
+                notifications.map((notification) => (
+                  <div 
+                    key={notification.id} 
+                    className="flex items-start space-x-3 p-3 rounded-lg bg-muted/50 hover:bg-muted/70 transition-colors"
+                  >
+                    <div className="flex-shrink-0 mt-1">
+                      {notification.type === 'class_cancelled' && (
+                        <div className="w-2 h-2 bg-destructive rounded-full animate-glow"></div>
+                      )}
                     </div>
-                    <p className="text-sm text-muted-foreground mb-1">
-                      {notification.message}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {notification.time}
-                    </p>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-sm font-medium truncate">
+                          {notification.teacherName || 'Teacher'}
+                        </p>
+                        <Badge 
+                          variant="destructive"
+                          className="text-xs"
+                        >
+                          Cancelled
+                        </Badge>
+                      </div>
+                      <p className="text-sm text-muted-foreground mb-1">
+                        {notification.message}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {formatNotificationTime(notification.timestamp)}
+                      </p>
+                    </div>
                   </div>
+                ))
+              ) : (
+                <div className="text-center py-6">
+                  <Bell className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
+                  <p className="text-sm text-muted-foreground">No notifications yet</p>
                 </div>
-              ))}
+              )}
             </div>
           </CardContent>
         </Card>

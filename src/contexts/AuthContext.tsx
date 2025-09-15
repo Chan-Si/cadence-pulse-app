@@ -1,4 +1,13 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { 
+  createUserWithEmailAndPassword, 
+  signInWithEmailAndPassword, 
+  signOut, 
+  onAuthStateChanged,
+  User as FirebaseUser 
+} from 'firebase/auth';
+import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { auth, db } from '@/lib/firebase';
 
 export type UserRole = 'teacher' | 'student';
 
@@ -31,68 +40,73 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Check for existing session on mount
+  // Listen to Firebase auth state changes
   useEffect(() => {
-    const storedUser = localStorage.getItem('cadence_user');
-    if (storedUser) {
-      setUser(JSON.parse(storedUser));
-    }
-    setIsLoading(false);
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        // User is signed in, fetch their data from Firestore
+        const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+        if (userDoc.exists()) {
+          const userData = userDoc.data();
+          setUser({
+            id: firebaseUser.uid,
+            name: userData.name,
+            email: firebaseUser.email!,
+            role: userData.role
+          });
+        }
+      } else {
+        // User is signed out
+        setUser(null);
+      }
+      setIsLoading(false);
+    });
+
+    return () => unsubscribe();
   }, []);
 
   const login = async (email: string, password: string, role?: UserRole): Promise<boolean> => {
-    setIsLoading(true);
-    
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Mock authentication - in real app, validate against backend
-    if (email && password) {
-      const userData: User = {
-        id: Date.now().toString(),
-        name: email.split('@')[0].charAt(0).toUpperCase() + email.split('@')[0].slice(1),
-        email,
-        role: role || 'student' // Default to student if not specified
-      };
-      
-      setUser(userData);
-      localStorage.setItem('cadence_user', JSON.stringify(userData));
-      setIsLoading(false);
+    try {
+      setIsLoading(true);
+      await signInWithEmailAndPassword(auth, email, password);
       return true;
+    } catch (error) {
+      console.error('Login error:', error);
+      setIsLoading(false);
+      return false;
     }
-    
-    setIsLoading(false);
-    return false;
   };
 
   const signup = async (name: string, email: string, password: string, role: UserRole): Promise<boolean> => {
-    setIsLoading(true);
-    
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Mock registration - in real app, create user in backend
-    if (name && email && password && role) {
-      const userData: User = {
-        id: Date.now().toString(),
+    try {
+      setIsLoading(true);
+      
+      // Create user with Firebase Auth
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      const { user: firebaseUser } = userCredential;
+      
+      // Create user document in Firestore
+      await setDoc(doc(db, 'users', firebaseUser.uid), {
         name,
         email,
-        role
-      };
+        role,
+        createdAt: new Date()
+      });
       
-      setUser(userData);
-      localStorage.setItem('cadence_user', JSON.stringify(userData));
-      setIsLoading(false);
       return true;
+    } catch (error) {
+      console.error('Signup error:', error);
+      setIsLoading(false);
+      return false;
     }
-    
-    setIsLoading(false);
-    return false;
   };
 
-  const logout = () => {
-    setUser(null);
-    localStorage.removeItem('cadence_user');
+  const logout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
   };
 
   return (
