@@ -55,12 +55,12 @@ const TeacherDashboard = () => {
     }
   };
 
-  const handleCancelClass = async () => {
+  const handleStopAttendance = async () => {
     try {
-      // Create notification for class cancellation
+      // Create notification for attendance stopped
       await addDoc(collection(db, 'notifications'), {
-        type: 'class_cancelled',
-        message: `Class cancelled by ${user?.name}`,
+        type: 'attendance_stopped',
+        message: `Attendance stopped by ${user?.name}`,
         sessionId: sessionId,
         timestamp: new Date(),
         teacherId: user?.id,
@@ -72,15 +72,15 @@ const TeacherDashboard = () => {
       setSessionId('');
       
       toast({
-        title: "Class Cancelled",
+        title: "Attendance Stopped",
         description: "Notification sent to students",
         variant: "destructive",
       });
     } catch (error) {
-      console.error('Error cancelling class:', error);
+      console.error('Error stopping attendance:', error);
       toast({
         title: "Error",
-        description: "Failed to cancel class",
+        description: "Failed to stop attendance",
         variant: "destructive",
       });
     }
@@ -213,10 +213,10 @@ const TeacherDashboard = () => {
                   variant="destructive"
                   size="xl"
                   className="w-full"
-                  onClick={handleCancelClass}
+                  onClick={handleStopAttendance}
                 >
                   <Square className="h-5 w-5" />
-                  Cancel Class
+                  Stop Attendance
                 </Button>
               )}
             </div>
@@ -224,7 +224,7 @@ const TeacherDashboard = () => {
             {isClassActive && (
               <div className="text-center text-sm text-muted-foreground animate-fade-in">
                 <p>Session started at {new Date().toLocaleTimeString()}</p>
-                <p>Students have 15 minutes to check in</p>
+                <p>Students have 2 minutes to check in</p>
               </div>
             )}
           </CardContent>
