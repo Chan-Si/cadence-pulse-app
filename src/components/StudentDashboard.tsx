@@ -1,18 +1,26 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { QrCode, Scan, Bell, LogOut, BookOpen, Calendar, CheckCircle, Clock, Camera, X } from 'lucide-react';
+import { Scan, Bell, LogOut, BookOpen, Calendar, CheckCircle, Clock, Camera, X, GraduationCap, TrendingUp, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
-import { collection, addDoc, onSnapshot, query, orderBy, limit } from 'firebase/firestore';
+import { collection, addDoc, onSnapshot, query, orderBy, limit, doc, getDoc, getDocs, where } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import QrScanner from 'qr-scanner';
+import { Camera as CapacitorCamera } from '@capacitor/camera';
+import { CameraResultType, CameraSource } from '@capacitor/camera';
+import { Capacitor } from '@capacitor/core';
+import CourseSelectionModal from './CourseSelectionModal';
+import TodaysSchedule from './TodaysSchedule';
 
 const StudentDashboard = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [notifications, setNotifications] = useState<any[]>([]);
+  const [showCourseModal, setShowCourseModal] = useState(false);
+  const [userCourses, setUserCourses] = useState<any[]>([]);
+  const [attendanceStats, setAttendanceStats] = useState<any>({});
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -20,6 +28,47 @@ const StudentDashboard = () => {
   const scannerRef = useRef<QrScanner | null>(null);
 
   useEffect(() => {
+    const checkCourseSelection = async () => {
+      if (!user) return;
+      
+      try {
+        const userDoc = await getDoc(doc(db, 'users', user.id));
+        const userData = userDoc.data();
+        
+        if (!userData?.courseSelectionCompleted) {
+          setShowCourseModal(true);
+        } else {
+          // Fetch user's enrolled courses
+          const coursesSnapshot = await getDocs(collection(db, 'courses'));
+          const allCourses = coursesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as any[];
+          const enrolledCourses = allCourses.filter((course: any) => userData.enrolledCourses?.includes(course.id));
+          setUserCourses(enrolledCourses);
+          
+          // Fetch attendance statistics
+          const attendanceQuery = query(
+            collection(db, 'attendance'),
+            where('studentId', '==', user.id)
+          );
+          const attendanceSnapshot = await getDocs(attendanceQuery);
+          const attendanceData = attendanceSnapshot.docs.map(doc => doc.data());
+          
+          // Calculate stats by course
+          const stats: any = {};
+          enrolledCourses.forEach((course: any) => {
+            const courseAttendance = attendanceData.filter((att: any) => att.courseName === course.name);
+            stats[course.id] = {
+              attended: courseAttendance.length,
+              total: 20, // Assume 20 total classes per course
+              percentage: Math.round((courseAttendance.length / 20) * 100)
+            };
+          });
+          setAttendanceStats(stats);
+        }
+      } catch (error) {
+        console.error('Error checking course selection:', error);
+      }
+    };
+
     // Listen for notifications
     const notificationsQuery = query(
       collection(db, 'notifications'),
@@ -35,59 +84,106 @@ const StudentDashboard = () => {
       setNotifications(newNotifications);
     });
 
+    checkCourseSelection();
     return () => unsubscribe();
-  }, []);
+  }, [user]);
 
   const handleScanQR = async () => {
     try {
       setIsScanning(true);
-      
-      if (!videoRef.current) return;
-      
-      // Create QR scanner instance
-      const scanner = new QrScanner(
-        videoRef.current,
-        async (result) => {
-          try {
-            // Parse QR code data
-            const qrData = JSON.parse(result.data);
-            
-            // Create attendance record
-            await addDoc(collection(db, 'attendance'), {
-              studentId: user?.id,
-              studentName: user?.name,
-              studentEmail: user?.email,
-              sessionId: qrData.sessionId,
-              teacherId: qrData.teacherId,
-              teacherName: qrData.teacherName,
-              timestamp: new Date(),
-              scannedAt: new Date()
-            });
-            
-            toast({
-              title: "Attendance Marked!",
-              description: "Successfully checked in to class",
-            });
-            
-            stopScanning();
-          } catch (error) {
-            console.error('Error processing QR code:', error);
-            toast({
-              title: "Invalid QR Code",
-              description: "This QR code is not valid for attendance",
-              variant: "destructive",
-            });
-          }
-        },
-        {
-          highlightScanRegion: true,
-          highlightCodeOutline: true,
+
+      // Check if running on mobile device
+      if (Capacitor.isNativePlatform()) {
+        // Use Capacitor Camera for native mobile
+        const image = await CapacitorCamera.getPhoto({
+          quality: 90,
+          allowEditing: false,
+          resultType: CameraResultType.DataUrl,
+          source: CameraSource.Camera
+        });
+
+        // Process the image with QR scanner
+        try {
+          const result = await QrScanner.scanImage(image.dataUrl!);
+          const qrData = JSON.parse(result);
+          
+          // Create attendance record with dynamic data
+          const selectedCourse = userCourses.find(course => course.id === qrData.courseId);
+          await addDoc(collection(db, 'attendance'), {
+            studentId: user?.id,
+            studentName: user?.name,
+            studentEmail: user?.email,
+            sessionId: qrData.sessionId,
+            courseId: qrData.courseId,
+            courseName: selectedCourse?.name || qrData.courseName,
+            teacherId: qrData.teacherId,
+            teacherName: qrData.teacherName,
+            timestamp: new Date(),
+            scannedAt: new Date(),
+            date: new Date().toISOString().split('T')[0]
+          });
+          
+          toast({
+            title: "Attendance Marked!",
+            description: `Successfully checked in to ${selectedCourse?.name || 'class'}`,
+          });
+        } catch (scanError) {
+          toast({
+            title: "Invalid QR Code",
+            description: "This QR code is not valid for attendance",
+            variant: "destructive",
+          });
         }
-      );
-      
-      scannerRef.current = scanner;
-      await scanner.start();
-      
+        setIsScanning(false);
+      } else {
+        // Use web camera for browser
+        if (!videoRef.current) return;
+        
+        const scanner = new QrScanner(
+          videoRef.current,
+          async (result) => {
+            try {
+              const qrData = JSON.parse(result.data);
+              const selectedCourse = userCourses.find(course => course.id === qrData.courseId);
+              
+              await addDoc(collection(db, 'attendance'), {
+                studentId: user?.id,
+                studentName: user?.name,
+                studentEmail: user?.email,
+                sessionId: qrData.sessionId,
+                courseId: qrData.courseId,
+                courseName: selectedCourse?.name || qrData.courseName,
+                teacherId: qrData.teacherId,
+                teacherName: qrData.teacherName,
+                timestamp: new Date(),
+                scannedAt: new Date(),
+                date: new Date().toISOString().split('T')[0]
+              });
+              
+              toast({
+                title: "Attendance Marked!",
+                description: `Successfully checked in to ${selectedCourse?.name || 'class'}`,
+              });
+              
+              stopScanning();
+            } catch (error) {
+              console.error('Error processing QR code:', error);
+              toast({
+                title: "Invalid QR Code", 
+                description: "This QR code is not valid for attendance",
+                variant: "destructive",
+              });
+            }
+          },
+          {
+            highlightScanRegion: true,
+            highlightCodeOutline: true,
+          }
+        );
+        
+        scannerRef.current = scanner;
+        await scanner.start();
+      }
     } catch (error) {
       console.error('Error starting camera:', error);
       toast({
@@ -163,8 +259,11 @@ const StudentDashboard = () => {
       <main className="mobile-container py-6 space-y-6">
         {/* Welcome Section */}
         <div className="text-center animate-fade-in">
+          <div className="w-16 h-16 gradient-primary rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-glow">
+            <GraduationCap className="h-8 w-8 text-white" />
+          </div>
           <h2 className="text-3xl font-bold mb-2">
-            Hello, {user?.name}! 📚
+            Hello, {user?.name}!
           </h2>
           <p className="text-muted-foreground">
             Ready for today's classes?
@@ -173,31 +272,37 @@ const StudentDashboard = () => {
 
         {/* Quick Stats */}
         <div className="grid grid-cols-3 gap-4 animate-slide-up">
-          <Card className="text-center">
+          <Card className="text-center bg-white/60 backdrop-blur-sm border-white/20 shadow-soft">
             <CardContent className="p-4">
               <Calendar className="h-6 w-6 mx-auto mb-2 text-primary" />
-              <p className="text-2xl font-bold">8</p>
-              <p className="text-xs text-muted-foreground">This Week</p>
+              <p className="text-2xl font-bold">{userCourses.length}</p>
+              <p className="text-xs text-muted-foreground">Enrolled</p>
             </CardContent>
           </Card>
-          <Card className="text-center">
+          <Card className="text-center bg-white/60 backdrop-blur-sm border-white/20 shadow-soft">
             <CardContent className="p-4">
-              <CheckCircle className="h-6 w-6 mx-auto mb-2 text-accent" />
-              <p className="text-2xl font-bold">92%</p>
-              <p className="text-xs text-muted-foreground">Attendance</p>
+              <TrendingUp className="h-6 w-6 mx-auto mb-2 text-accent" />
+              <p className="text-2xl font-bold">
+                {userCourses.length > 0 
+                  ? Math.round((Object.values(attendanceStats) as any[]).reduce((acc: number, stat: any) => acc + (stat?.percentage || 0), 0) / userCourses.length) || 0
+                  : 0}%
+              </p>
+              <p className="text-xs text-muted-foreground">Avg Attendance</p>
             </CardContent>
           </Card>
-          <Card className="text-center">
+          <Card className="text-center bg-white/60 backdrop-blur-sm border-white/20 shadow-soft">
             <CardContent className="p-4">
-              <Clock className="h-6 w-6 mx-auto mb-2 text-primary-glow" />
-              <p className="text-2xl font-bold">5</p>
-              <p className="text-xs text-muted-foreground">Courses</p>
+              <Users className="h-6 w-6 mx-auto mb-2 text-primary-glow" />
+              <p className="text-2xl font-bold">
+                {(Object.values(attendanceStats) as any[]).reduce((acc: number, stat: any) => acc + (stat?.attended || 0), 0)}
+              </p>
+              <p className="text-xs text-muted-foreground">Classes Attended</p>
             </CardContent>
           </Card>
         </div>
 
         {/* Main Action Card */}
-        <Card className="shadow-medium animate-scale-in">
+        <Card className="shadow-medium animate-scale-in bg-white/70 backdrop-blur-md border-white/20">
           <CardHeader className="text-center">
             <CardTitle className="flex items-center justify-center space-x-2">
               <Scan className="h-6 w-6 text-primary" />
@@ -251,7 +356,7 @@ const StudentDashboard = () => {
         </Card>
 
         {/* Notifications Section */}
-        <Card className="animate-slide-up">
+        <Card className="animate-slide-up bg-white/60 backdrop-blur-sm border-white/20">
           <CardHeader>
             <CardTitle className="flex items-center space-x-2">
               <Bell className="h-5 w-5 text-primary" />
@@ -265,32 +370,38 @@ const StudentDashboard = () => {
                 notifications.map((notification) => (
                   <div 
                     key={notification.id} 
-                    className="flex items-start space-x-3 p-3 rounded-lg bg-muted/50 hover:bg-muted/70 transition-colors"
+                    className="flex flex-col space-y-2 p-4 rounded-lg bg-white/50 backdrop-blur-sm border border-white/30 hover:bg-white/60 transition-all duration-200"
                   >
-                    <div className="flex-shrink-0 mt-1">
-                      {notification.type === 'class_cancelled' && (
-                        <div className="w-2 h-2 bg-destructive rounded-full animate-glow"></div>
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between mb-1">
-                        <p className="text-sm font-medium truncate">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-2">
+                        <div className="w-2 h-2 bg-destructive rounded-full animate-pulse"></div>
+                        <p className="text-sm font-medium">
                           {notification.teacherName || 'Teacher'}
                         </p>
-                        <Badge 
-                          variant="destructive"
-                          className="text-xs"
-                        >
-                          Cancelled
-                        </Badge>
                       </div>
-                      <p className="text-sm text-muted-foreground mb-1">
-                        {notification.message}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {formatNotificationTime(notification.timestamp)}
-                      </p>
+                      <Badge variant="destructive" className="text-xs">
+                        Class Cancelled
+                      </Badge>
                     </div>
+                    
+                    <p className="text-sm text-muted-foreground">
+                      {notification.message}
+                    </p>
+                    
+                    {notification.activitySuggestions && (
+                      <div className="mt-3 p-3 bg-blue-50 rounded-lg border-l-4 border-blue-400">
+                        <h4 className="text-sm font-medium text-blue-900 mb-1">
+                          📚 Suggested Activities:
+                        </h4>
+                        <p className="text-sm text-blue-800">
+                          {notification.activitySuggestions}
+                        </p>
+                      </div>
+                    )}
+                    
+                    <p className="text-xs text-muted-foreground">
+                      {formatNotificationTime(notification.timestamp)}
+                    </p>
                   </div>
                 ))
               ) : (
@@ -303,35 +414,59 @@ const StudentDashboard = () => {
           </CardContent>
         </Card>
 
-        {/* Recent Classes */}
-        <Card className="animate-slide-up">
+        {/* My Courses */}
+        <Card className="animate-slide-up bg-white/60 backdrop-blur-sm border-white/20">
           <CardHeader>
-            <CardTitle className="text-lg">Recent Classes</CardTitle>
+            <CardTitle className="text-lg">My Courses</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {[
-                { name: "Computer Science 101", time: "9:00 AM", status: "Present" },
-                { name: "Mathematics 201", time: "11:00 AM", status: "Present" },
-                { name: "Physics Lab", time: "2:00 PM", status: "Absent" }
-              ].map((item, index) => (
-                <div key={index} className="flex items-center justify-between p-2 rounded-lg bg-muted/50">
-                  <div>
-                    <p className="text-sm font-medium">{item.name}</p>
-                    <p className="text-xs text-muted-foreground">{item.time}</p>
-                  </div>
-                  <Badge 
-                    variant={item.status === "Present" ? "default" : "destructive"}
-                    className="text-xs"
+              {userCourses.length > 0 ? (
+                userCourses.map((course) => {
+                  const stats = attendanceStats[course.id] || { percentage: 0, attended: 0, total: 0 };
+                  return (
+                    <div key={course.id} className="flex items-center justify-between p-3 rounded-lg bg-white/50 backdrop-blur-sm border border-white/30">
+                      <div>
+                        <p className="text-sm font-medium">{course.name}</p>
+                        <p className="text-xs text-muted-foreground">{course.code} • {course.instructor}</p>
+                        <p className="text-xs text-muted-foreground">{stats.attended}/{stats.total} classes attended</p>
+                      </div>
+                      <Badge 
+                        variant={stats.percentage >= 75 ? "default" : stats.percentage >= 60 ? "secondary" : "destructive"}
+                        className="text-xs"
+                      >
+                        {stats.percentage}%
+                      </Badge>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="text-center py-6">
+                  <BookOpen className="h-12 w-12 text-muted-foreground mx-auto mb-2" />
+                  <p className="text-sm text-muted-foreground">No courses enrolled</p>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    className="mt-2"
+                    onClick={() => setShowCourseModal(true)}
                   >
-                    {item.status}
-                  </Badge>
+                    Select Courses
+                  </Button>
                 </div>
-              ))}
+              )}
             </div>
           </CardContent>
         </Card>
+
+        {/* Today's Schedule */}
+        <TodaysSchedule />
       </main>
+      
+      {/* Course Selection Modal */}
+      <CourseSelectionModal 
+        isOpen={showCourseModal} 
+        onClose={() => setShowCourseModal(false)} 
+      />
     </div>
   );
 };
